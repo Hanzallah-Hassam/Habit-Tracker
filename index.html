@@ -1580,7 +1580,7 @@ function closeImport() {
 }
 
 // ── Sync (GitHub Gist) ───────────────────────────────────
-const GIST_API = 'https://api.gist.github.com';
+const GIST_API = 'https://api.github.com';
 let lastRemoteSha = null;
 let pendingConflictRemote = null;
 
@@ -1658,17 +1658,33 @@ function renderSyncPopover() {
 
 async function githubFetch(path, opts = {}) {
   if (!syncConfig.token) throw new Error('No PAT configured');
-  const resp = await fetch(GIST_API + path, {
-    ...opts,
-    headers: {
-      'Authorization': 'Bearer ' + syncConfig.token,
-      'Accept': 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      ...(opts.headers || {}),
-    },
-  });
+  let resp;
+  try {
+    resp = await fetch(GIST_API + path, {
+      ...opts,
+      headers: {
+        'Authorization': 'Bearer ' + syncConfig.token,
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        ...(opts.headers || {}),
+      },
+    });
+  } catch (e) {
+    // The most common cause: GitHub redirects POST /gists to a CDN URL
+    // and browsers drop the Authorization header on cross-origin redirect,
+    // which surfaces as a generic "Failed to fetch" / TypeError.
+    if (e instanceof TypeError) {
+      throw new Error('Network error (likely CORS or offline). Try: (1) check internet, (2) try a different network, (3) disable any VPN/ad-blocker.');
+    }
+    throw e;
+  }
   if (!resp.ok) {
-    if (resp.status === 401) throw new Error('Unauthorized — check your PAT');
+    if (resp.status === 401) throw new Error('Unauthorized — your PAT is invalid, expired, or missing Gists: Read+write permission');
+    if (resp.status === 403) {
+      const text = await resp.text().catch(() => '');
+      if (/rate limit/i.test(text)) throw new Error('GitHub rate limit hit — wait a few minutes');
+      throw new Error('Forbidden — PAT may lack Gists permission. Check token settings.');
+    }
     if (resp.status === 404) throw new Error('Gist not found — check the Gist ID');
     const text = await resp.text().catch(() => '');
     throw new Error('HTTP ' + resp.status + (text ? ': ' + text.slice(0, 120) : ''));
